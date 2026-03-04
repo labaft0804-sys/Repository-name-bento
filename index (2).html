@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>お弁当注文ターミナル</title>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+
+<style>
+body { font-family: -apple-system, sans-serif; text-align: center; margin: 0; background: #f0f2f5; padding-bottom: 20px; }
+#video-container { width: 100%; height: 250px; background: #000; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+video { width: 100%; height: 100%; object-fit: cover; display: none; }
+#start-btn {
+    padding: 15px 30px; font-size: 1.2rem; font-weight: bold; color: white;
+    background: #28a745; border: none; border-radius: 50px; cursor: pointer; z-index: 100;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+}
+.card { width: 94%; margin: -30px auto 0; background: white; border-radius: 20px; padding: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); position: relative; z-index: 10; box-sizing: border-box; }
+#displayName { font-size: 2rem; font-weight: bold; margin: 10px 0; min-height: 3rem; background: #f8f9fa; border-radius: 12px; display: flex; align-items: center; justify-content: center; border: 2px dashed #ccc; }
+.bento-group { display: flex; justify-content: space-between; gap: 8px; margin: 15px 0; }
+.bento-option { flex: 1; border: 2px solid #007aff; border-radius: 12px; padding: 15px 0; }
+.btn-submit { width: 100%; padding: 20px; font-size: 1.5rem; border-radius: 15px; border: none; background: #007aff; color: white; font-weight: bold; cursor: pointer; }
+.btn-submit:disabled { background: #aaa; cursor: not-allowed; }
+.status-msg { color: #007aff; font-weight: bold; margin-bottom: 10px; height: 1.2em; }
+</style>
+</head>
+
+<body>
+
+<div id="video-container">
+    <button id="start-btn" onclick="initCamera()">カメラを起動する</button>
+    <video id="video" autoplay playsinline muted></video>
+</div>
+
+<div class="card">
+    <div id="status" class="status-msg">QR待ち</div>
+    <div id="displayName">---</div>
+
+    <div class="bento-group">
+        <div class="bento-option"><input type="radio" name="bento" id="bentoA" value="A"><label for="bentoA">A弁当</label></div>
+        <div class="bento-option"><input type="radio" name="bento" id="bentoB" value="B"><label for="bentoB">B弁当</label></div>
+        <div class="bento-option"><input type="radio" name="bento" id="bentoNone" value="なし" checked><label for="bentoNone">なし</label></div>
+    </div>
+    <button id="submitBtn" class="btn-submit" onclick="submitData()">確定</button>
+</div>
+
+<script>
+// ✅ GASデプロイURLをここに貼る
+const GAS_URL = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec";
+
+const video = document.getElementById('video');
+const startBtn = document.getElementById('start-btn');
+const status = document.getElementById('status');
+const displayName = document.getElementById('displayName');
+
+// canvasは一度だけ生成
+const canvas = document.createElement("canvas");
+const ctx = canvas.getContext("2d");
+
+let names = [];
+let matchedName = "";
+
+// ✅ GAS APIから名前一覧を取得
+window.onload = async () => {
+    try {
+        const res = await fetch(`${GAS_URL}?action=getNames`);
+        const json = await res.json();
+        names = json.names;
+    } catch (e) {
+        status.innerText = "⚠️ 名前の取得に失敗しました";
+        console.error(e);
+    }
+};
+
+async function initCamera() {
+    try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert("このブラウザはカメラ非対応です");
+            return;
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        video.srcObject = stream;
+        await video.play();
+        video.style.display = 'block';
+        startBtn.style.display = 'none';
+        status.innerText = "QRをかざしてください";
+        requestAnimationFrame(tick);
+    } catch (err) {
+        alert("カメラを起動できません。\nブラウザのカメラ許可を確認してください。\n\n" + err.message);
+        console.error(err);
+    }
+}
+
+function tick() {
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.height = video.videoHeight;
+        canvas.width = video.videoWidth;
+        ctx.drawImage(video, 0, 0);
+        const code = jsQR(ctx.getImageData(0, 0, canvas.width, canvas.height).data, canvas.width, canvas.height);
+
+        if (code && names.includes(code.data)) {
+            matchedName = code.data;
+            displayName.innerText = matchedName;
+            // QR読み取り成功 → カメラ停止
+            video.srcObject.getTracks().forEach(t => t.stop());
+            video.style.display = 'none';
+            status.innerText = "✅ QR読み取り完了";
+            return;
+        }
+    }
+    requestAnimationFrame(tick);
+}
+
+async function submitData() {
+    if (!matchedName) return alert("QRを読み取ってください");
+
+    const bento = document.querySelector('input[name="bento"]:checked').value;
+    const submitBtn = document.getElementById('submitBtn');
+    submitBtn.disabled = true;
+    submitBtn.innerText = "送信中...";
+    status.innerText = "送信中...";
+
+    try {
+        // ✅ POSTでGAS APIにデータ送信
+        // GASはapplication/jsonを受け付けないためContent-Typeはtext/plainを使用
+        const res = await fetch(GAS_URL, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({ action: "recordData", name: matchedName, bento })
+        });
+        const json = await res.json();
+        if (json.status === "ok") {
+            status.innerText = "✅ 送信完了";
+            submitBtn.innerText = "送信完了";
+            setTimeout(() => location.reload(), 2000);
+        } else {
+            throw new Error(json.message);
+        }
+    } catch (e) {
+        status.innerText = "❌ 送信失敗。再試行してください。";
+        submitBtn.disabled = false;
+        submitBtn.innerText = "確定";
+        console.error(e);
+    }
+}
+</script>
+
+</body>
+</html>
